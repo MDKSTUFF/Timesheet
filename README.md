@@ -75,3 +75,16 @@ vendor/jspdf.umd.min.js    Local PDF library (jsPDF)
 ## License notice
 
 The MDK name, logo, and company content belong to MDK Electric Ltd. The bundled jsPDF library retains its upstream MIT license header.
+
+## Customers and private backups (v11)
+
+The Customers tab stores contacts in a password-encrypted owner archive. Select a
+saved customer on quotes and work orders to fill contact/address fields; edit any
+field to override it on that document. Amounts and extensions update while typing.
+PDF tables wrap using the actual drawing font and continue long rows across pages.
+
+Open Backups to set a backup password, recover saved documents/PDF versions, export
+an encrypted backup, or connect Supabase Free for owner-only cloud copies. See
+[CLOUD_SETUP.md](CLOUD_SETUP.md) for the owner allowlist and private storage setup.
+Cloud storage is not active until a project, owner account, and connection are
+configured. The backup password is not recoverable.

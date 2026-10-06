@@ -1,6 +1,6 @@
-const CACHE = "mdk-field-v10";
+const CACHE = "mdk-field-v11";
 const APP_SHELL = [
-  "./", "./index.html", "./styles.css?v=10", "./app.js?v=10", "./data.js", "./pdf.js",
+  "./", "./index.html", "./styles.css?v=11", "./app.js?v=11", "./data.js", "./pdf.js", "./vault.js", "./customers.js",
   "./manifest.webmanifest", "./assets/mdk-logo.jpg", "./assets/icons/icon-192.png",
   "./assets/icons/icon-512.png", "./vendor/jspdf.umd.min.js"
 ];
@@ -14,7 +14,7 @@ self.addEventListener("activate", event => {
 });
 
 self.addEventListener("fetch", event => {
-  if (event.request.method !== "GET") return;
+  if (event.request.method !== "GET" || new URL(event.request.url).origin !== self.location.origin) return;
   event.respondWith(caches.match(event.request).then(cached => cached || fetch(event.request).then(response => {
     const copy = response.clone();
     caches.open(CACHE).then(cache => cache.put(event.request, copy));
