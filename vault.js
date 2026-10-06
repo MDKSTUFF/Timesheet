@@ -114,7 +114,11 @@ export function downloadBlob(blob, filename) {
 }
 export const downloadEnvelope = envelope => downloadBlob(new Blob([JSON.stringify(envelope)], { type: 'application/json' }), `MDK_Private_Backup_${new Date().toISOString().replace(/[:.]/g, '-')}.mdkbackup`);
 export function cloudConfig() {
-  try { return JSON.parse(localStorage.getItem(CONFIG)) || {}; } catch { return {}; }
+  const defaults = {
+    url: 'https://dwtzbxuwxcyhavisiubm.supabase.co',
+    publicKey: 'sb_publishable_ngw9wbVyJmu5EGzcREvy0A_6UHZYFPa',
+  };
+  try { return JSON.parse(localStorage.getItem(CONFIG)) || defaults; } catch { return defaults; }
 }
 export function configureCloud(url, publicKey) {
   const parsed = new URL(url);
