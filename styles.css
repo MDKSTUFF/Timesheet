@@ -34,7 +34,7 @@ h1 { margin-bottom: 2px; font-size: clamp(1.55rem, 5vw, 2.35rem); line-height: 1
 .subtitle, .muted { color: var(--muted); }
 .topbar-actions { margin-left: auto; display: flex; gap: 8px; }
 
-.bottom-nav { position: fixed !important; z-index: 100; left: 0; right: 0; bottom: 0; width: 100%; display: grid; grid-template-columns: repeat(5, minmax(0, 1fr)); padding: 8px 6px calc(8px + env(safe-area-inset-bottom)); background: #07131efa; border-top: 1px solid var(--line); box-shadow: 0 -12px 32px #0008; backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); transform: translateZ(0); }
+.bottom-nav { position: fixed !important; z-index: 100; left: 0; right: 0; bottom: 0; width: 100%; display: grid; grid-template-columns: repeat(7, minmax(0, 1fr)); padding: 8px 6px calc(8px + env(safe-area-inset-bottom)); background: #07131efa; border-top: 1px solid var(--line); box-shadow: 0 -12px 32px #0008; backdrop-filter: blur(18px); -webkit-backdrop-filter: blur(18px); transform: translateZ(0); }
 .nav-button { border: 0; background: transparent; min-height: 54px; display: grid; place-items: center; gap: 2px; color: var(--muted); border-radius: 12px; font-size: .68rem; cursor: pointer; }
 .nav-button .icon { font-size: 1.25rem; line-height: 1; }
 .nav-button.active { color: var(--cyan); background: #20d5ff12; }
@@ -196,3 +196,6 @@ input[type="date"]::-webkit-date-and-time-value { min-width: 0; text-align: left
   body { background: white; color: black; }
   .shell, .main { display: block; padding: 0; max-width: none; }
 }
+
+.bottom-nav .nav-button { font-size: .58rem; }
+.record h3, .record p { overflow-wrap: anywhere; }

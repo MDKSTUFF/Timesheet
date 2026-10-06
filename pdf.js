@@ -190,29 +190,38 @@ function drawTable(pdf, columns, rows, y, settings, title, number) {
     return y + 11;
   }
   rows.forEach((row, rowIndex) => {
+    // Measure with exactly the font used to draw. Header font is smaller.
+    pdf.setFont("helvetica", "bold");
+    pdf.setFontSize(7.4);
     const wrapped = row.map((value, index) => pdf.splitTextToSize(clean(value), widths[index] - 4));
-    const rowHeight = Math.max(7.3, Math.max(...wrapped.map(lines => lines.length)) * 3.45 + 3.2);
-    if (y + rowHeight > CONTENT_BOTTOM) {
-      y = newPage(pdf, settings, title, number);
-      drawHeader();
+    const lineCount = Math.max(...wrapped.map(lines => lines.length));
+    let offset = 0;
+    while (offset < lineCount) {
+      if (y + 7.3 > CONTENT_BOTTOM) { y = newPage(pdf, settings, title, number); drawHeader(); }
+      const capacity = Math.max(1, Math.floor((CONTENT_BOTTOM - y - 3.2) / 3.45));
+      const count = Math.min(capacity, lineCount - offset);
+      const rowHeight = Math.max(7.3, count * 3.45 + 3.2);
+      if (rowIndex % 2 === 1) {
+        pdf.setFillColor(...ALT_ROW);
+        pdf.rect(MARGIN, y, CONTENT_WIDTH, rowHeight, "F");
+      }
+      pdf.setDrawColor(...LINE);
+      pdf.line(MARGIN, y + rowHeight, PAGE_WIDTH - MARGIN, y + rowHeight);
+      let x = MARGIN;
+      wrapped.forEach((lines, index) => {
+        pdf.setFont("helvetica", "bold");
+        pdf.setFontSize(7.4);
+        pdf.setTextColor(...TEXT);
+        const align = columns[index].align || "left";
+        const textX = align === "right" ? x + widths[index] - 2 : align === "center" ? x + widths[index] / 2 : x + 2;
+        const chunk = lines.slice(offset, offset + count);
+        if (chunk.length) pdf.text(chunk, textX, y + 4.8, { align, lineHeightFactor: 3.45 / (7.4 * 25.4 / 72) });
+        x += widths[index];
+      });
+      y += rowHeight;
+      offset += count;
+      if (offset < lineCount) { y = newPage(pdf, settings, title, number); drawHeader(); }
     }
-    if (rowIndex % 2 === 1) {
-      pdf.setFillColor(...ALT_ROW);
-      pdf.rect(MARGIN, y, CONTENT_WIDTH, rowHeight, "F");
-    }
-    pdf.setDrawColor(...LINE);
-    pdf.line(MARGIN, y + rowHeight, PAGE_WIDTH - MARGIN, y + rowHeight);
-    let x = MARGIN;
-    wrapped.forEach((lines, index) => {
-      pdf.setFont("helvetica", "bold");
-      pdf.setFontSize(7.4);
-      pdf.setTextColor(...TEXT);
-      const align = columns[index].align || "left";
-      const textX = align === "right" ? x + widths[index] - 2 : align === "center" ? x + widths[index] / 2 : x + 2;
-      pdf.text(lines, textX, y + 4.8, { align });
-      x += widths[index];
-    });
-    y += rowHeight;
   });
   return y + 3.5;
 }
@@ -281,8 +290,10 @@ function buildWorkOrder(pdf, doc, settings, title) {
   const gap = 3;
   const leftWidth = 97.5;
   const rightWidth = CONTENT_WIDTH - leftWidth - gap;
-  const detailHeight = 31;
-  drawPanel(pdf, MARGIN, y, leftWidth, detailHeight, "Customer", doc.customer, { boldValue: true, maxLines: 5 });
+  const customerText = doc.customerDetails ? [doc.customerID ? `Customer ID: ${doc.customerID}` : "", doc.customer, addressLines(doc.customerDetails)].filter(Boolean).join("\n") : doc.customer;
+  pdf.setFont("helvetica", "bold"); pdf.setFontSize(8.3);
+  const detailHeight = Math.max(31, pdf.splitTextToSize(clean(customerText), leftWidth - 6).length * 3.8 + 12);
+  drawPanel(pdf, MARGIN, y, leftWidth, detailHeight, "Customer", customerText, { boldValue: true, maxLines: 30 });
   drawDetailPanel(pdf, MARGIN + leftWidth + gap, y, rightWidth, [
     ["Job No.", doc.jobNumber], ["Date", displayDate(doc.date)], ["Completed By", doc.completedBy], ["Incident No.", doc.incidentNumber],
   ]);
@@ -338,9 +349,11 @@ function buildQuote(pdf, doc, settings, title) {
   const gap = 3;
   const half = (CONTENT_WIDTH - gap) / 2;
   const shipping = doc.useBillingForShipping ? doc.billedTo : doc.shipTo;
-  drawPanel(pdf, MARGIN, y, half, 35, "Billed to", addressLines(doc.billedTo), { boldValue: true, maxLines: 7 });
-  drawPanel(pdf, MARGIN + half + gap, y, half, 35, "Ship to", addressLines(shipping), { boldValue: true, maxLines: 7 });
-  y += 41;
+  pdf.setFont("helvetica", "bold"); pdf.setFontSize(8.3);
+  const addressHeight = Math.max(35, Math.max(pdf.splitTextToSize(clean(addressLines(doc.billedTo)), half - 6).length, pdf.splitTextToSize(clean(addressLines(shipping)), half - 6).length) * 3.8 + 12);
+  drawPanel(pdf, MARGIN, y, half, addressHeight, "Billed to", addressLines(doc.billedTo), { boldValue: true, maxLines: 30 });
+  drawPanel(pdf, MARGIN + half + gap, y, half, addressHeight, "Ship to", addressLines(shipping), { boldValue: true, maxLines: 30 });
+  y += addressHeight + 6;
   const thirds = (CONTENT_WIDTH - gap * 2) / 3;
   drawInlinePanel(pdf, MARGIN, y, thirds, "Date", displayDate(doc.date));
   drawInlinePanel(pdf, MARGIN + thirds + gap, y, thirds, "Customer ID", doc.customerID);

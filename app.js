@@ -1,15 +1,23 @@
 import {
-  displayDate, exportBackup, loadState, makeQuote, makeTimesheet, makeWorkOrder, money,
+  displayDate, loadState, makeQuote, makeTimesheet, makeWorkOrder, money,
   newExpense, newLabour, newMaterial, newQuoteItem, persist, quoteTotals, setPath,
   timesheetTotals, validateBackup, workOrderTotals,
 } from "./data.js";
-import { savePdf, sharePdf } from "./pdf.js";
+import { makePdf } from "./pdf.js";
+import {
+  archivePdf, archiveRecord, cloudConfig, cloudConnected, cloudLogin, cloudLogout, configureCloud,
+  downloadBlob, downloadEnvelope, fromBase64, hasVault, isUnlocked, listCloudBackups,
+  lockVault, privateData, readCloudBackup, restoreEnvelope, saveVault, unlockVault,
+  uploadBackup, uploadCloudRecord,
+} from "./vault.js";
+import { applyCustomer, newCustomer } from "./customers.js";
 
 const app = document.querySelector("#app");
 let state = loadState();
 let toastTimer;
 let installPrompt;
-const ui = { view: "dashboard", editingType: null, editing: null, search: "" };
+const ui = { view: "dashboard", editingType: null, editing: null, search: "", customer: null, cloudBackups: [], cloudStatus: "", vaultExists: false };
+let privateBusy = false;
 
 const typeConfig = {
   workOrders: { label: "Work Orders", singular: "Work Order", icon: "🛠", primary: doc => doc.customer || "No customer", date: doc => doc.date },
@@ -17,9 +25,9 @@ const typeConfig = {
   quotes: { label: "Quotes", singular: "Quote", icon: "▤", primary: doc => doc.billedTo?.name || doc.billedTo?.company || "No customer", date: doc => doc.date },
 };
 
-const icons = { dashboard: "⌂", workOrders: "🛠", timesheets: "◷", quotes: "▤", more: "•••" };
+const icons = { dashboard: "⌂", workOrders: "🛠", timesheets: "◷", quotes: "▤", customers: "♙", backups: "▣", more: "•••" };
 const navItems = [
-  ["dashboard", "Dashboard"], ["workOrders", "Work Orders"], ["timesheets", "Timesheets"], ["quotes", "Quotes"], ["more", "More"],
+  ["dashboard", "Dashboard"], ["workOrders", "Work Orders"], ["timesheets", "Timesheets"], ["quotes", "Quotes"], ["customers", "Customers"], ["backups", "Backups"], ["more", "More"],
 ];
 
 function esc(value) {
@@ -73,7 +81,7 @@ function shell(content) {
 
 function pageTitle() {
   if (ui.view === "dashboard") return greeting();
-  return typeConfig[ui.view]?.label || (ui.view === "more" ? "More" : "MDK Field");
+  return typeConfig[ui.view]?.label || ({ more: "More", customers: "Customers", backups: "Private backups" }[ui.view]) || "MDK Field";
 }
 
 function greeting() {
@@ -82,7 +90,7 @@ function greeting() {
 }
 
 function render() {
-  const content = ui.editing ? renderEditor() : ui.view === "dashboard" ? dashboard() : typeConfig[ui.view] ? listPage(ui.view) : morePage();
+  const content = ui.editing ? renderEditor() : ui.view === "dashboard" ? dashboard() : typeConfig[ui.view] ? listPage(ui.view) : ui.view === "customers" ? customersPage() : ui.view === "backups" ? backupsPage() : morePage();
   app.innerHTML = shell(content);
   document.title = ui.editing ? `${ui.editing.number} • MDK Field` : `${pageTitle()} • MDK Field`;
 }
@@ -173,11 +181,12 @@ function commonDocumentFields(doc) {
 }
 
 function workOrderEditor(doc) {
+  doc.customerDetails ||= newCustomer();
   const totals = workOrderTotals(doc);
-  return `<section class="form-section card"><h2>Work order details</h2><div class="fields two">${commonDocumentFields(doc)}${textarea("Customer", "customer", doc.customer)}${input("Job number", "jobNumber", doc.jobNumber)}${input("Date", "date", doc.date, "date")}${select("Completed by", "completedBy", doc.completedBy, ["", ...state.settings.staffNames])}${input("Incident number", "incidentNumber", doc.incidentNumber)}</div></section>
+  return `<section class="form-section card"><h2>Work order details</h2><div class="fields two">${commonDocumentFields(doc)}${customerPicker(doc)}${input("Customer ID", "customerID", doc.customerID)}${textarea("Customer / company", "customer", doc.customer)}${addressFields("customerDetails", doc.customerDetails || newCustomer())}${input("Job number", "jobNumber", doc.jobNumber)}${input("Date", "date", doc.date, "date")}${select("Completed by", "completedBy", doc.completedBy, ["", ...state.settings.staffNames])}${input("Incident number", "incidentNumber", doc.incidentNumber)}</div></section>
     <section class="form-section card"><h2>Work completed</h2>${textarea("Description of completed work", "workCompleted", doc.workCompleted)}</section>
-    <section class="form-section card span-two"><h2>Materials</h2><div class="row-list">${doc.materials.map((row, i) => `<div class="line-row"><div class="line-row-head"><strong>Material ${i + 1}</strong><button type="button" class="button danger icon-only" data-remove="materials" data-index="${i}" aria-label="Remove material">⌫</button></div><div class="row-fields material">${input("Quantity", `materials.${i}.quantity`, row.quantity, "number", 'step="any" inputmode="decimal"')}${input("Description", `materials.${i}.description`, row.description)}${input("Unit cost", `materials.${i}.unitCost`, row.unitCost, "number", 'step="0.01" inputmode="decimal"')}${input("Extension", "", money(number(row.quantity) * number(row.unitCost)), "text", "readonly")}</div></div>`).join("") || '<p class="muted">No materials entered.</p>'}</div><button type="button" class="button section-add" data-add="materials">＋ Add material</button></section>
-    <section class="form-section card span-two"><h2>Labour</h2><div class="row-list">${doc.labour.map((row, i) => `<div class="line-row"><div class="line-row-head"><strong>Labour ${i + 1}</strong><button type="button" class="button danger icon-only" data-remove="labour" data-index="${i}" aria-label="Remove labour">⌫</button></div><div class="row-fields labour">${input("Date", `labour.${i}.date`, row.date, "date")}${select("Name", `labour.${i}.name`, row.name, ["", ...state.settings.staffNames])}${input("Hours", `labour.${i}.hours`, row.hours, "number", 'step="0.25" inputmode="decimal"')}${input("Hourly rate", `labour.${i}.hourlyRate`, row.hourlyRate, "number", 'step="0.01" inputmode="decimal"')}${input("Extension", "", money(number(row.hours) * number(row.hourlyRate)), "text", "readonly")}</div></div>`).join("") || '<p class="muted">No labour entered.</p>'}</div><button type="button" class="button section-add" data-add="labour">＋ Add labour</button></section>
+    <section class="form-section card span-two"><h2>Materials</h2><div class="row-list">${doc.materials.map((row, i) => `<div class="line-row"><div class="line-row-head"><strong>Material ${i + 1}</strong><button type="button" class="button danger icon-only" data-remove="materials" data-index="${i}" aria-label="Remove material">⌫</button></div><div class="row-fields material">${input("Quantity", `materials.${i}.quantity`, row.quantity, "number", 'step="any" inputmode="decimal"')}${input("Description", `materials.${i}.description`, row.description)}${input("Unit cost", `materials.${i}.unitCost`, row.unitCost, "number", 'step="0.01" inputmode="decimal"')}${input("Extension", "", money(number(row.quantity) * number(row.unitCost)), "text", `readonly data-extension="${i}"`)}</div></div>`).join("") || '<p class="muted">No materials entered.</p>'}</div><button type="button" class="button section-add" data-add="materials">＋ Add material</button></section>
+    <section class="form-section card span-two"><h2>Labour</h2><div class="row-list">${doc.labour.map((row, i) => `<div class="line-row"><div class="line-row-head"><strong>Labour ${i + 1}</strong><button type="button" class="button danger icon-only" data-remove="labour" data-index="${i}" aria-label="Remove labour">⌫</button></div><div class="row-fields labour">${input("Date", `labour.${i}.date`, row.date, "date")}${select("Name", `labour.${i}.name`, row.name, ["", ...state.settings.staffNames])}${input("Hours", `labour.${i}.hours`, row.hours, "number", 'step="0.25" inputmode="decimal"')}${input("Hourly rate", `labour.${i}.hourlyRate`, row.hourlyRate, "number", 'step="0.01" inputmode="decimal"')}${input("Extension", "", money(number(row.hours) * number(row.hourlyRate)), "text", `readonly data-extension="${i}"`)}</div></div>`).join("") || '<p class="muted">No labour entered.</p>'}</div><button type="button" class="button section-add" data-add="labour">＋ Add labour</button></section>
     <section class="form-section card span-two"><h2>Expenses</h2><div class="row-list">${doc.expenses.map((row, i) => `<div class="line-row"><div class="line-row-head"><strong>Expense ${i + 1}</strong><button type="button" class="button danger icon-only" data-remove="expenses" data-index="${i}" aria-label="Remove expense">⌫</button></div><div class="row-fields expense">${input("Date", `expenses.${i}.date`, row.date, "date")}${select("Name", `expenses.${i}.employeeName`, row.employeeName, ["", ...state.settings.staffNames])}${input("Description", `expenses.${i}.description`, row.description)}${input("Amount", `expenses.${i}.amount`, row.amount, "number", 'step="0.01" inputmode="decimal"')}</div></div>`).join("") || '<p class="muted">No expenses entered.</p>'}</div><button type="button" class="button section-add" data-add="expenses">＋ Add expense</button></section>
     <section class="form-section card"><h2>Authorization</h2><div class="fields">${input("Authorized by", "authorizedBy", doc.authorizedBy)}${input("Customer PO", "customerPO", doc.customerPO)}${input("Authorization date", "authorizationDate", doc.authorizationDate, "date")}${textarea("Internal notes", "internalNotes", doc.internalNotes)}</div></section>
     <section class="form-section card"><h2>Totals</h2>${input("HST rate (0.13 = 13%)", "taxRate", doc.taxRate, "number", 'step="0.01" inputmode="decimal"')}<div class="totals" data-totals>${workOrderTotalHtml(totals)}</div></section>`;
@@ -206,9 +215,9 @@ function addressFields(prefix, address) {
 function quoteEditor(doc) {
   const totals = quoteTotals(doc);
   return `<section class="form-section card span-two"><h2>Quote details</h2><div class="fields three">${commonDocumentFields(doc)}${input("Date", "date", doc.date, "date")}${input("Valid until", "validUntil", doc.validUntil, "date")}${input("Customer ID", "customerID", doc.customerID)}${input("Purchase order", "purchaseOrder", doc.purchaseOrder)}${select("Currency", "currencyCode", doc.currencyCode, ["CAD", "USD"])}</div></section>
-    <section class="form-section card"><h2>Billed to</h2><div class="fields two">${addressFields("billedTo", doc.billedTo)}</div></section>
+    <section class="form-section card"><h2>Billed to</h2>${customerPicker(doc)}<div class="fields two">${addressFields("billedTo", doc.billedTo)}</div></section>
     <section class="form-section card"><h2>Shipping</h2><label class="field check-field"><input type="checkbox" data-path="useBillingForShipping"${doc.useBillingForShipping ? " checked" : ""}><span>Same as billing address</span></label>${doc.useBillingForShipping ? '<p class="notice">The billing address will also appear as the shipping address.</p>' : `<div class="fields two">${addressFields("shipTo", doc.shipTo)}</div>`}</section>
-    <section class="form-section card span-two"><h2>Items</h2><div class="row-list">${doc.items.map((row, i) => `<div class="line-row"><div class="line-row-head"><strong>Item ${i + 1}</strong><button type="button" class="button danger icon-only" data-remove="items" data-index="${i}" aria-label="Remove item">⌫</button></div><div class="row-fields quote-item">${input("Description", `items.${i}.description`, row.description)}${input("Unit cost", `items.${i}.unitCost`, row.unitCost, "number", 'step="0.01" inputmode="decimal"')}${input("Quantity", `items.${i}.quantity`, row.quantity, "number", 'step="any" inputmode="decimal"')}${input("Amount", "", money(number(row.unitCost) * number(row.quantity), doc.currencyCode), "text", "readonly")}</div></div>`).join("") || '<p class="muted">No quote items entered.</p>'}</div><button type="button" class="button section-add" data-add="items">＋ Add quote item</button></section>
+    <section class="form-section card span-two"><h2>Items</h2><div class="row-list">${doc.items.map((row, i) => `<div class="line-row"><div class="line-row-head"><strong>Item ${i + 1}</strong><button type="button" class="button danger icon-only" data-remove="items" data-index="${i}" aria-label="Remove item">⌫</button></div><div class="row-fields quote-item">${input("Description", `items.${i}.description`, row.description)}${input("Unit cost", `items.${i}.unitCost`, row.unitCost, "number", 'step="0.01" inputmode="decimal"')}${input("Quantity", `items.${i}.quantity`, row.quantity, "number", 'step="any" inputmode="decimal"')}${input("Amount", "", money(number(row.unitCost) * number(row.quantity), doc.currencyCode), "text", `readonly data-extension="${i}"`)}</div></div>`).join("") || '<p class="muted">No quote items entered.</p>'}</div><button type="button" class="button section-add" data-add="items">＋ Add quote item</button></section>
     <section class="form-section card"><h2>Notes</h2>${textarea("Special notes and instructions", "specialNotes", doc.specialNotes)}</section>
     <section class="form-section card"><h2>Totals</h2><div class="fields">${input("Discount", "discountAmount", doc.discountAmount, "number", 'step="0.01" inputmode="decimal"')}${input("Tax rate (0.13 = 13%)", "taxRate", doc.taxRate, "number", 'step="0.01" inputmode="decimal"')}</div><div class="totals" data-totals>${quoteTotalHtml(totals, doc.currencyCode)}</div></section>`;
 }
@@ -224,7 +233,7 @@ function totalLine(label, value, grand = false) {
 function morePage() {
   const s = state.settings;
   return `<div class="settings-grid">
-    <section class="form-section card"><h2>Files & backups</h2><p class="muted">A backup includes all documents, numbering, staff names, and company settings.</p><div class="backup-actions"><button class="button primary" data-action="export-backup">⇩ Export full backup</button><label class="button">⇧ Import backup<input class="file-input" type="file" accept="application/json,.json" data-import></label></div><p class="notice">Documents are stored privately in this browser. Export a backup regularly, especially before clearing browser data or changing phones.</p></section>
+    <section class="form-section card"><h2>Files & backups</h2><p class="muted">An encrypted backup includes customers, PDFs, documents, numbering, staff names, and company settings.</p><div class="backup-actions"><button class="button primary" data-action="export-backup">⇩ Export full backup</button><label class="button">⇧ Import backup<input class="file-input" type="file" accept="application/json,.json" data-import></label></div><p class="notice">Documents are stored privately in this browser. Open the Backups tab for owner login, encrypted backups, and cloud recovery.</p></section>
     <section class="form-section card"><h2>Company</h2><div class="fields two">${settingInput("Company name", "companyName", s.companyName)}${settingInput("Address", "addressLine1", s.addressLine1)}${settingInput("City, province, postal code", "cityProvincePostal", s.cityProvincePostal)}${settingInput("Phone", "phone", s.phone, "tel")}${settingInput("Company email", "email", s.email, "email")}${settingInput("Website", "website", s.website)}${settingInput("HST number", "hstNumber", s.hstNumber)}${settingInput("Default email recipient", "defaultEmailRecipient", s.defaultEmailRecipient, "email")}</div></section>
     <section class="form-section card"><h2>Defaults & numbering</h2><div class="fields three">${settingInput("HST rate (0.13 = 13%)", "defaultTaxRate", s.defaultTaxRate, "number", 'step="0.01"')}${settingInput("Work order prefix", "workOrderPrefix", s.workOrderPrefix)}${settingInput("Next work order", "nextWorkOrderNumber", s.nextWorkOrderNumber, "number", 'step="1"')}${settingInput("Timesheet prefix", "timesheetPrefix", s.timesheetPrefix)}${settingInput("Next timesheet", "nextTimesheetNumber", s.nextTimesheetNumber, "number", 'step="1"')}${settingInput("Quote prefix", "quotePrefix", s.quotePrefix)}${settingInput("Next quote", "nextQuoteNumber", s.nextQuoteNumber, "number", 'step="1"')}</div></section>
     <section class="form-section card"><h2>Employees</h2><label class="field"><span>One name per line</span><textarea data-staff>${esc(s.staffNames.join("\n"))}</textarea></label></section>
@@ -255,7 +264,8 @@ function openRecord(type, id) {
   window.scrollTo(0, 0);
 }
 
-function saveRecord() {
+async function saveRecord() {
+  if (!requireOwner()) return;
   const doc = ui.editing;
   const type = ui.editingType;
   if (!String(doc.number || "").trim()) return showToast("Add a document number before saving.");
@@ -264,12 +274,21 @@ function saveRecord() {
   if (index >= 0) state[type][index] = clone(doc); else state[type].unshift(clone(doc));
   state[type].sort((a, b) => String(b.modifiedAt).localeCompare(String(a.modifiedAt)));
   persist(state);
-  showToast(`${typeConfig[type].singular} saved on this device.`);
+  archiveRecord(type, doc);
+  await backupCurrent();
+  showToast(`${typeConfig[type].singular} saved with a private backup.${cloudConnected() ? " " + ui.cloudStatus : " Cloud not connected."}`);
 }
 
 function updateTotals() {
   const totalsNode = document.querySelector("[data-totals]");
-  if (!totalsNode || !ui.editing) return;
+  if (!ui.editing) return;
+  document.querySelectorAll('[data-extension]').forEach(node => {
+    const i = Number(node.dataset.extension);
+    const collection = node.closest('.row-fields').classList.contains('quote-item') ? 'items' : node.closest('.row-fields').classList.contains('material') ? 'materials' : 'labour';
+    const row = ui.editing[collection][i];
+    node.value = money(collection === 'labour' ? number(row.hours) * number(row.hourlyRate) : number(row.quantity) * number(row.unitCost), ui.editing.currencyCode || 'CAD');
+  });
+  if (!totalsNode) return;
   if (ui.editingType === "workOrders") totalsNode.innerHTML = workOrderTotalHtml(workOrderTotals(ui.editing));
   if (ui.editingType === "timesheets") totalsNode.innerHTML = timesheetTotalHtml(timesheetTotals(ui.editing));
   if (ui.editingType === "quotes") totalsNode.innerHTML = quoteTotalHtml(quoteTotals(ui.editing), ui.editing.currencyCode);
@@ -293,21 +312,32 @@ function showToast(message) {
 }
 
 async function handlePdf(action, type = ui.editingType, doc = ui.editing) {
+  if (!requireOwner()) return;
   try {
-    showToast(action === "share" ? "Preparing shareable PDF…" : "Preparing PDF…");
-    if (action === "share") {
-      const result = await sharePdf(type, doc, state.settings);
-      showToast(result.shared ? "PDF shared." : `Sharing is unavailable here, so ${result.filename} was downloaded.`);
-    } else {
-      const filename = await savePdf(type, doc, state.settings);
-      showToast(`${filename} saved to Downloads.`);
-    }
+    showToast("Preparing PDF and private backup…");
+    const result = await makePdf(type, doc, state.settings);
+    const blob = result.pdf.output("blob");
+    // Save the editable document even when the user only presses Save/Share PDF.
+    doc.modifiedAt = new Date().toISOString();
+    const index = state[type].findIndex(item => item.id === doc.id);
+    if (index >= 0) state[type][index] = clone(doc); else state[type].unshift(clone(doc));
+    persist(state);
+    archiveRecord(type, doc);
+    await archivePdf(type, doc, blob, result.filename);
+    await backupCurrent();
+    const file = new File([blob], result.filename, { type: "application/pdf" });
+    if (action === "share" && navigator.share && navigator.canShare?.({ files: [file] })) {
+      await navigator.share({ title: result.title, files: [file] });
+    } else downloadBlob(blob, result.filename);
+    showToast(`PDF ${action === "share" ? "prepared" : "downloaded"}; private copy saved. ${ui.cloudStatus || "Cloud not connected."}`);
   } catch (error) {
     if (error?.name !== "AbortError") showToast(error?.message || "Could not create the PDF.");
   }
 }
 
 app.addEventListener("click", async event => {
+  try {
+  if (await ownerClick(event)) return;
   const nav = event.target.closest("[data-nav]");
   if (nav) { ui.view = nav.dataset.nav; ui.editing = null; ui.editingType = null; ui.search = ""; render(); window.scrollTo(0, 0); return; }
   const create = event.target.closest("[data-new]");
@@ -334,7 +364,7 @@ app.addEventListener("click", async event => {
   if (deletion) {
     const type = deletion.dataset.delete;
     const doc = state[type].find(item => item.id === deletion.dataset.id);
-    if (doc && confirm(`Delete ${doc.number}? This cannot be undone.`)) { state[type] = state[type].filter(item => item.id !== doc.id); persist(state); render(); showToast(`${doc.number} deleted.`); }
+    if (doc && requireOwner() && confirm(`Delete ${doc.number} from this device? Its private backup is retained.`)) { state[type] = state[type].filter(item => item.id !== doc.id); persist(state); render(); showToast(`${doc.number} deleted.`); }
     return;
   }
   const recordPdf = event.target.closest("[data-record-pdf]");
@@ -346,18 +376,20 @@ app.addEventListener("click", async event => {
   const action = event.target.closest("[data-action]")?.dataset.action;
   if (!action) return;
   if (action === "close-editor") { ui.editing = null; ui.editingType = null; render(); return; }
-  if (action === "save-record") return saveRecord();
-  if (action === "save-pdf") return handlePdf("save");
-  if (action === "share-pdf") return handlePdf("share");
-  if (action === "export-backup") { exportBackup(state); showToast("Backup saved to Downloads."); return; }
+  if (action === "save-record") return await saveRecord();
+  if (action === "save-pdf") return await handlePdf("save");
+  if (action === "share-pdf") return await handlePdf("share");
+  if (action === "export-backup") { if (!requireOwner()) return; downloadEnvelope(await saveVault(state)); showToast("Encrypted backup downloaded."); return; }
   if (action === "install" && installPrompt) { installPrompt.prompt(); await installPrompt.userChoice; installPrompt = null; render(); return; }
-  if (action === "reset-data" && confirm("Delete every locally saved MDK document and reset settings? This cannot be undone.")) {
-    localStorage.removeItem("mdk-field-web-v1"); state = loadState(); render(); showToast("Local app data was reset.");
+  if (action === "reset-data" && requireOwner() && confirm("Delete every locally saved MDK document and reset settings? This cannot be undone.")) {
+    localStorage.removeItem("mdk-field-web-v1"); state = loadState(); render(); showToast("Local app data reset. Private archive retained in Backups.");
   }
+  } catch (error) { showToast(error.message || "Could not complete this action."); }
 });
 
 app.addEventListener("input", event => {
   const target = event.target;
+  if (target.matches('[data-customer-field]') && isUnlocked() && ui.customer) { ui.customer[target.dataset.customerField] = target.value; return; }
   if (target.matches("[data-search]")) { ui.search = target.value; const cursor = target.selectionStart; render(); const next = document.querySelector("[data-search]"); next?.focus(); next?.setSelectionRange(cursor, cursor); return; }
   if (target.matches("[data-path]") && ui.editing) {
     const path = target.dataset.path;
@@ -386,13 +418,30 @@ app.addEventListener("input", event => {
 });
 
 app.addEventListener("change", async event => {
+  if (event.target.matches('[data-customer-picker]') && ui.editing && isUnlocked()) {
+    const customer = privateData().customers.find(c => c.id === event.target.value);
+    if (customer) applyCustomer(ui.editingType, ui.editing, customer);
+    else ui.editing.customerRecordId = '';
+    render(); return;
+  }
+  if (event.target.matches('[data-private-import]') && event.target.files?.[0]) {
+    try {
+      const envelope = JSON.parse(await event.target.files[0].text());
+      if (!confirm('Restore this encrypted backup? Current documents and customers will be replaced. Export your current private backup first if you need to keep them.')) return;
+      const password = document.querySelector('[data-restore-password]').value;
+      state = validateBackup(await restoreEnvelope(envelope, password)); persist(state); ui.vaultExists = true; ui.customer = null; render(); showToast('Private backup restored.');
+    } catch (error) { showToast(error.message); }
+    return;
+  }
   const inputNode = event.target.closest("[data-import]");
   if (!inputNode?.files?.[0]) return;
   try {
+    if (!requireOwner()) return;
     const imported = validateBackup(JSON.parse(await inputNode.files[0].text()));
     if (!confirm(`Restore ${imported.workOrders.length + imported.timesheets.length + imported.quotes.length} documents from this backup? Current local data will be replaced.`)) return;
     state = imported;
     persist(state);
+    await backupCurrent();
     render();
     showToast("Backup restored successfully.");
   } catch (error) {
@@ -401,7 +450,7 @@ app.addEventListener("change", async event => {
 });
 
 window.addEventListener("beforeinstallprompt", event => { event.preventDefault(); installPrompt = event; render(); });
-window.addEventListener("online", () => { const node = document.querySelector("#connection-status"); if (node) node.textContent = "Online"; });
+window.addEventListener("online", () => { if (isUnlocked() && cloudConnected()) backupCurrent().catch(error => showToast(error.message)); const node = document.querySelector("#connection-status"); if (node) node.textContent = "Online"; });
 window.addEventListener("offline", () => { const node = document.querySelector("#connection-status"); if (node) node.textContent = "Offline ready"; });
 
 if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
@@ -409,3 +458,132 @@ if ("serviceWorker" in navigator && location.protocol.startsWith("http")) {
 }
 
 render();
+hasVault().then(exists => { ui.vaultExists = exists; if (["customers", "backups"].includes(ui.view)) render(); }).catch(error => showToast(error.message));
+app.addEventListener('submit', event => event.preventDefault());
+
+function requireOwner() {
+  if (isUnlocked()) return true;
+  ui.view = 'backups';
+  showToast('Unlock the private archive before saving. Your open document is kept; return to it after unlocking.');
+  // Keep editor in memory but display owner screen while it is locked.
+  ui.ownerReturn = { editing: ui.editing, editingType: ui.editingType };
+  ui.editing = null; ui.editingType = null; render();
+  return false;
+}
+function unlockForm() {
+  return `<section class="form-section card"><h2>${ui.vaultExists ? 'Unlock private data' : 'Create your private archive'}</h2>
+    <p class="muted">Customers and backups are encrypted with your password. Keep it safe: it cannot be recovered. Cloud sign-in is separate from this backup password.</p>
+    <div class="fields"><label class="field"><span>Backup password</span><input type="password" data-vault-password autocomplete="current-password" minlength="8"></label>
+    ${ui.vaultExists ? '' : '<label class="field"><span>Confirm backup password</span><input type="password" data-vault-confirm autocomplete="new-password" minlength="8"></label>'}</div>
+    <button class="button primary" data-owner="unlock">${ui.vaultExists ? 'Unlock' : 'Create private archive'}</button></section>`;
+}
+function customerPicker(doc) {
+  if (!isUnlocked()) return '<p class="notice">Unlock Customers & Backups to select a saved customer. Manual entry is available.</p>';
+  return `<label class="field"><span>Saved customer</span><select data-customer-picker><option value="">Manual entry / different customer</option>${privateData().customers.map(c => `<option value="${esc(c.id)}"${doc.customerRecordId === c.id ? ' selected' : ''}>${esc([c.company, c.name].filter(Boolean).join(' — '))}</option>`).join('')}</select></label><p class="muted">Selecting fills the details below. You can change any field for this document without changing the customer database.</p>`;
+}
+function customersPage() {
+  if (!isUnlocked()) return unlockForm();
+  const customers = privateData().customers;
+  const c = ui.customer;
+  const fields = { name: 'Contact name', company: 'Company', customerID: 'Customer number / ID', addressLine1: 'Address line 1', addressLine2: 'Address line 2', city: 'City', provinceState: 'Province / State', postalCode: 'Postal code', country: 'Country', phone: 'Phone', email: 'Email', notes: 'Notes' };
+  return `<div class="toolbar"><button class="button primary" data-owner="new-customer">＋ Add customer</button><button class="button" data-owner="lock">Lock private data</button></div>
+    ${c ? `<section class="form-section card"><h2>${customers.some(item => item.id === c.id) ? 'Edit customer' : 'New customer'}</h2><div class="fields two">${Object.entries(fields).map(([key, label]) => `<label class="field"><span>${label}</span><input data-customer-field="${key}" type="${key === 'email' ? 'email' : key === 'phone' ? 'tel' : 'text'}" value="${esc(c[key])}"></label>`).join('')}</div><div class="backup-actions"><button class="button primary" data-owner="save-customer">Save customer</button><button class="button" data-owner="cancel-customer">Cancel</button></div></section>` : ''}
+    <section class="record-list">${customers.length ? customers.slice().sort((a, b) => (a.company || a.name).localeCompare(b.company || b.name)).map(item => `<article class="record card"><div><h3>${esc(item.company || item.name)}</h3><p>${esc(item.name)} · ${esc(item.phone)} · ${esc(item.email)}</p><p class="muted">${esc([item.addressLine1, item.city, item.postalCode].filter(Boolean).join(', '))}</p></div><div class="record-actions"><button class="button" data-customer-edit="${esc(item.id)}">Edit</button><button class="button danger" data-customer-delete="${esc(item.id)}">Delete</button></div></article>`).join('') : '<div class="empty card">No customers yet. Add contacts here, then select them on quotes and work orders.</div>'}</section>`;
+}
+function backupsPage() {
+  const config = cloudConfig();
+  const data = isUnlocked() ? privateData() : null;
+  const pdfs = data?.pdfs || [];
+  const history = data?.history || [];
+  return `${data ? `<section class="form-section card"><h2>Private archive unlocked</h2><p class="muted">Every Save and PDF export keeps an encrypted copy here. ${data.customers.length} customers · ${pdfs.length} PDF versions.</p><div class="backup-actions"><button class="button primary" data-action="export-backup">Download encrypted backup</button><button class="button" data-owner="lock">Lock private data</button></div></section>` : unlockForm()}
+    <section class="form-section card"><h2>Free cloud backups</h2><p class="muted">Connect your Supabase project once on each device. Sign in with your owner account to back up or recover documents anywhere. Files are private and encrypted. Backups preserve versions from each device; restore a recent version before editing on another device.</p>
+      <details${config.url ? '' : ' open'}><summary>Project connection</summary><div class="fields"><label class="field"><span>Supabase project URL</span><input data-cloud-url type="url" value="${esc(config.url)}" placeholder="https://your-project.supabase.co"></label><label class="field"><span>Publishable / anon key</span><input data-cloud-key value="${esc(config.publicKey)}" autocomplete="off"></label></div><button class="button" data-owner="configure-cloud">Save connection</button><p class="muted">Never enter a service-role or secret key. See <a href="https://github.com/MDKSTUFF/Timesheet/blob/fix/customers-private-backups/CLOUD_SETUP.md" target="_blank" rel="noopener">one-time setup instructions</a>.</p></details>
+      ${cloudConnected() ? `<div class="backup-actions"><button class="button primary" data-owner="backup-cloud">Back up now</button><button class="button" data-owner="refresh-cloud">Refresh cloud backups</button><button class="button" data-owner="cloud-logout">Sign out</button></div>` : `<div class="fields two"><label class="field"><span>Owner email</span><input data-cloud-email type="email" autocomplete="username"></label><label class="field"><span>Owner account password</span><input data-cloud-password type="password" autocomplete="current-password"></label></div><button class="button primary" data-owner="cloud-login">Sign in</button>`}
+      <p class="notice" role="status">${esc(ui.cloudStatus || 'Cloud backups are not connected yet. Local encrypted copies stay on this device until uploaded or downloaded.')}</p>
+      ${ui.cloudBackups.length ? `<label class="field"><span>Cloud backup version</span><select data-cloud-version>${ui.cloudBackups.map(item => `<option value="${esc(item.name)}">${esc(item.created_at || item.name)}</option>`).join('')}</select></label><button class="button" data-owner="restore-cloud">Restore selected version</button>` : ''}
+    </section>
+    <section class="form-section card"><h2>Restore encrypted backup</h2><p class="muted">Restore a downloaded file or a selected cloud version using the password that encrypted it.</p><label class="field"><span>Backup password for restore</span><input type="password" data-restore-password autocomplete="off"></label><label class="button">Choose encrypted backup<input class="file-input" type="file" accept=".mdkbackup,application/json" data-private-import></label></section>
+    ${data ? `<section class="form-section card"><h2>Saved document versions</h2><p class="muted">Recover an editable version even if it was deleted from the main list.</p><div class="record-list">${history.slice().reverse().map(item => `<article class="record card"><div><strong>${esc(item.document.number)}</strong><p class="muted">${esc(typeConfig[item.type]?.label)} · ${esc(item.createdAt)}</p></div><button class="button" data-archive-record="${esc(item.id)}">Recover</button></article>`).join('') || '<p>No saved versions yet.</p>'}</div></section><section class="form-section card"><h2>Saved PDFs</h2><p class="muted">Download any saved version without regenerating it. Editable documents are included in the encrypted backup.</p><div class="record-list">${pdfs.slice().reverse().map(pdf => `<article class="record card"><div><strong>${esc(pdf.filename)}</strong><p class="muted">${esc(typeConfig[pdf.type]?.label)} · ${esc(pdf.createdAt)}</p></div><button class="button" data-archive-pdf="${esc(pdf.id)}">Download</button></article>`).join('') || '<p>No PDFs archived yet.</p>'}</div></section>` : ''}`;
+}
+async function backupCurrent() {
+  const envelope = await saveVault(state);
+  if (cloudConnected()) {
+    try {
+      await uploadBackup(envelope);
+      if (ui.editing && ui.editingType) await uploadCloudRecord(ui.editingType, ui.editing);
+      ui.cloudStatus = `Cloud backup saved ${new Date().toLocaleString()}.`;
+    } catch (error) { ui.cloudStatus = `Saved privately on this device. Cloud backup pending: ${error.message} Use Back up now to retry.`; }
+  }
+  return envelope;
+}
+async function ownerClick(event) {
+  const edit = event.target.closest('[data-customer-edit]');
+  const deletion = event.target.closest('[data-customer-delete]');
+  const pdf = event.target.closest('[data-archive-pdf]');
+  const archivedRecord = event.target.closest('[data-archive-record]');
+  const action = event.target.closest('[data-owner]')?.dataset.owner;
+  if (!edit && !deletion && !pdf && !archivedRecord && !action) return false;
+  if (privateBusy) { showToast('Please wait for the private archive operation to finish.'); return true; }
+  privateBusy = true;
+  try {
+    if (edit) { if (requireOwner()) ui.customer = clone(privateData().customers.find(c => c.id === edit.dataset.customerEdit)); render(); return true; }
+    if (deletion) {
+      if (!requireOwner()) return true;
+      if (confirm('Delete this contact from the customer database? Existing documents keep their entered details.')) {
+        privateData().customers = privateData().customers.filter(c => c.id !== deletion.dataset.customerDelete);
+        await backupCurrent(); render();
+      }
+      return true;
+    }
+    if (archivedRecord) {
+      if (!requireOwner()) return true;
+      const item = privateData().history?.find(r => r.id === archivedRecord.dataset.archiveRecord);
+      if (item) {
+        ui.editingType = item.type; ui.editing = clone(item.document);
+        showToast('Archived version opened. Save to restore it to the main list.'); render();
+      }
+      return true;
+    }
+    if (pdf) {
+      if (!requireOwner()) return true;
+      const item = privateData().pdfs.find(p => p.id === pdf.dataset.archivePdf);
+      if (item) downloadBlob(new Blob([fromBase64(item.content)], { type: 'application/pdf' }), item.filename);
+      return true;
+    }
+    if (action === 'unlock') {
+      const password = document.querySelector('[data-vault-password]').value;
+      const confirmation = document.querySelector('[data-vault-confirm]');
+      if (confirmation && confirmation.value !== password) throw new Error('Backup passwords do not match.');
+      await unlockVault(password, state); ui.vaultExists = true;
+      if (ui.ownerReturn) { Object.assign(ui, ui.ownerReturn); ui.ownerReturn = null; }
+      render(); showToast('Private archive unlocked.');
+    } else if (action === 'lock') {
+      lockVault(); cloudLogout(); ui.cloudBackups = []; ui.cloudStatus = ''; ui.customer = null; render();
+    } else if (action === 'new-customer') { if (requireOwner()) ui.customer = newCustomer(); render(); }
+    else if (action === 'cancel-customer') { ui.customer = null; render(); }
+    else if (action === 'save-customer') {
+      if (!requireOwner() || !ui.customer) return true;
+      if (!ui.customer.name.trim() && !ui.customer.company.trim()) throw new Error('Add a contact name or company.');
+      const index = privateData().customers.findIndex(c => c.id === ui.customer.id);
+      if (index < 0) privateData().customers.push(clone(ui.customer)); else privateData().customers[index] = clone(ui.customer);
+      await backupCurrent(); ui.customer = null; render(); showToast(`Customer saved privately. ${ui.cloudStatus || 'Cloud not connected.'}`);
+    } else if (action === 'configure-cloud') {
+      configureCloud(document.querySelector('[data-cloud-url]').value.trim(), document.querySelector('[data-cloud-key]').value.trim()); ui.cloudBackups = []; ui.cloudStatus = ''; render(); showToast('Project connection saved. Sign in with your owner account.');
+    } else if (action === 'cloud-login') {
+      await cloudLogin(document.querySelector('[data-cloud-email]').value.trim(), document.querySelector('[data-cloud-password]').value);
+      ui.cloudBackups = await listCloudBackups(); ui.cloudStatus = 'Owner signed in. Restore a recent version on a new device, or back up this device now.'; render();
+    } else if (action === 'cloud-logout') { cloudLogout(); ui.cloudBackups = []; ui.cloudStatus = ''; render(); }
+    else if (action === 'refresh-cloud') { ui.cloudBackups = await listCloudBackups(); render(); }
+    else if (action === 'backup-cloud') {
+      if (!requireOwner()) return true;
+      await backupCurrent(); ui.cloudBackups = await listCloudBackups(); render();
+    } else if (action === 'restore-cloud') {
+      const name = document.querySelector('[data-cloud-version]').value;
+      const password = document.querySelector('[data-restore-password]').value;
+      if (!confirm('Replace the documents and customers on this device with this cloud version? Download your current encrypted backup first if needed.')) return true;
+      const envelope = await readCloudBackup(name);
+      state = validateBackup(await restoreEnvelope(envelope, password, true)); persist(state); ui.vaultExists = true; ui.customer = null; render(); showToast('Cloud backup restored. Customers, documents and saved PDFs are available.');
+    }
+    return true;
+  } finally { privateBusy = false; }
+}

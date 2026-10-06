@@ -4,7 +4,11 @@
   "private": true,
   "type": "module",
   "scripts": {
-    "test": "node --check app.js && node --check data.js && node --check pdf.js && node --check sw.js && node tests.mjs",
+    "test": "node --check app.js && node --check data.js && node --check pdf.js && node --check vault.js && node --check customers.js && node --check sw.js && node tests.mjs && node regression-tests.mjs && node ui-tests.mjs",
     "serve": "python3 -m http.server 4173"
+  },
+  "devDependencies": {
+    "fake-indexeddb": "^6.2.5",
+    "jsdom": "^30.1.2"
   }
 }
